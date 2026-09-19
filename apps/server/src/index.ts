@@ -90,6 +90,8 @@ app.post('/api/rooms/:roomId/files', requireAuth, upload.single('file'), async (
 });
 app.post('/api/run', requireAuth, async (req, res) => {
   if (!process.env.JUDGE0_API_URL) return res.status(503).json({ message: 'Judge0 is not configured. JavaScript can run locally in the browser.' });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
   try {
     const rapidApiHeaders: Record<string, string> = {};
     if (process.env.JUDGE0_API_KEY) {
@@ -98,13 +100,18 @@ app.post('/api/run', requireAuth, async (req, res) => {
     }
     const response = await fetch(`${process.env.JUDGE0_API_URL.replace(/\/$/, '')}/submissions?base64_encoded=false&wait=true`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', ...rapidApiHeaders },
-      body: JSON.stringify({ source_code: String(req.body.code || '').slice(0, 200000), language_id: Number(req.body.languageId || 63) })
+      body: JSON.stringify({ source_code: String(req.body.code || '').slice(0, 200000), language_id: Number(req.body.languageId || 63) }),
+      signal: controller.signal
     });
     const result = await response.json();
     if (!response.ok) return res.status(response.status).json({ message: result.message || result.error || 'Judge0 rejected the submission.', details: result });
     res.json(result);
   }
-  catch { res.status(502).json({ message: 'Code execution service is unavailable.' }); }
+  catch (error) {
+    const timedOut = error instanceof Error && error.name === 'AbortError';
+    res.status(timedOut ? 504 : 502).json({ message: timedOut ? 'Judge0 timed out after 20 seconds. Check your API key, subscription and internet connection.' : 'Code execution service is unavailable.' });
+  }
+  finally { clearTimeout(timeout); }
 });
 
 io.use(async (socket, next) => { try { socket.data.auth = await verifyToken(socket.handshake.auth.token); next(); } catch (error) { next(error instanceof Error ? error : new Error('Unauthorized')); } });

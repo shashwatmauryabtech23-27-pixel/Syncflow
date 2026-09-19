@@ -130,9 +130,17 @@ export default function App() {
     if(language==='html'){const win=window.open('','_blank');win?.document.write(code);win?.document.close();setOutput('HTML preview opened in a new tab.');return}
     if(language==='css'||language==='json'){setOutput(`${languages[language].label} is validated by Monaco and does not need execution.`);return}
     if(language!=='javascript'){
-      setOutput(`Running ${languages[language].label}…`); const token=await authUser?.getIdToken();
-      const res=await fetch(`${API}/api/run`,{method:'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:JSON.stringify({code,languageId:languages[language].id})}); const data=await res.json();
-      setOutput(res.ok?(data.stdout||data.stderr||data.compile_output||data.status?.description||'Program finished without output.'):(data.message||'Execution failed. Configure Judge0 on the server.')); return;
+      setOutput(`Running ${languages[language].label}…`);
+      const controller=new AbortController(); const timeout=setTimeout(()=>controller.abort(),25000);
+      try {
+        const token=await authUser?.getIdToken();
+        const res=await fetch(`${API}/api/run`,{method:'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:JSON.stringify({code,languageId:languages[language].id}),signal:controller.signal});
+        const data=await res.json().catch(()=>({message:`Server returned HTTP ${res.status}.`}));
+        setOutput(res.ok?(data.stdout||data.stderr||data.compile_output||data.status?.description||'Program finished without output.'):(data.message||'Execution failed. Check Judge0 configuration.'));
+      } catch(error) {
+        setOutput(error instanceof Error&&error.name==='AbortError'?'Execution timed out. Check Judge0 API key and subscription.':`Execution request failed: ${error instanceof Error?error.message:'Unknown network error'}`);
+      } finally { clearTimeout(timeout); }
+      return;
     }
     setOutput('Running JavaScript in an isolated browser worker…');
     const workerSource = `self.console={log:(...a)=>postMessage({type:'log',value:a.map(v=>typeof v==='string'?v:JSON.stringify(v)).join(' ')}),error:(...a)=>postMessage({type:'log',value:a.join(' ')})};self.onmessage=e=>{try{eval(e.data);postMessage({type:'done'})}catch(err){postMessage({type:'error',value:err.stack||err.message})}}`;
