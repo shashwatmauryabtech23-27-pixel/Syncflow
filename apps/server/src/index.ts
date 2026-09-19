@@ -8,6 +8,9 @@ import { DecodedIdToken, getAuth } from 'firebase-admin/auth';
 import { createServer } from 'node:http';
 import { mkdirSync } from 'node:fs';
 import { Server } from 'socket.io';
+import dns from "node:dns";
+
+dns.setServers(["8.8.8.8", "1.1.1.1"]);
 
 const port = Number(process.env.PORT || 4000);
 const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
