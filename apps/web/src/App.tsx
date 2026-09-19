@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import Editor from '@monaco-editor/react';
 import { io, Socket } from 'socket.io-client';
+import { User as FirebaseUser, onAuthStateChanged } from 'firebase/auth';
+import { auth, firebaseConfigured, loginWithGoogle, logout } from './firebase';
 import { Braces, CheckCircle2, Clipboard, Code2, FilePlus2, Files, Hash, KanbanSquare, MessageSquare, Mic, MicOff, MonitorUp, NotebookPen, Play, Plus, Send, Settings, Sparkles, Users, Video, VideoOff, Wifi, X } from 'lucide-react';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:4000';
@@ -27,26 +29,41 @@ export default function App() {
   const [mic, setMic] = useState(true);
   const [video, setVideo] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState('');
   const socket = useRef<Socket | null>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => () => { socket.current?.disconnect(); }, []);
-  const join = () => {
-    if (!name.trim() || !roomId.trim()) return;
-    localStorage.setItem('syncflow:name', name);
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, user => { setAuthUser(user); setAuthLoading(false); if (user?.displayName) setName(user.displayName); });
+    return () => { unsubscribe(); socket.current?.disconnect(); };
+  }, []);
+  const googleLogin = async () => {
+    setAuthError('');
+    if (!firebaseConfigured) return setAuthError('Firebase web credentials are missing in apps/web/.env.');
+    try { await loginWithGoogle(); } catch (error) { setAuthError(error instanceof Error ? error.message : 'Google sign-in failed.'); }
+  };
+  const join = async () => {
+    if (!authUser || !roomId.trim()) return setAuthError('Please sign in with Google first.');
+    const token = await authUser.getIdToken();
+    const authResponse = await fetch(`${API}/api/auth/firebase`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+    if (!authResponse.ok) return setAuthError((await authResponse.json()).message || 'Backend authentication failed.');
+    localStorage.setItem('syncflow:name', authUser.displayName || name);
     history.replaceState(null, '', `?room=${encodeURIComponent(roomId)}`);
-    const s = io(API);
+    const s = io(API, { auth: { token } });
     socket.current = s;
     s.on('connect', () => { setConnected(true); s.emit('room:join', { roomId, name }); });
     s.on('disconnect', () => setConnected(false));
-    s.on('room:state', state => { setCode(state.code); setNotes(state.notes); setTasks(state.tasks); });
+    s.on('connect_error', error => setAuthError(error.message));
+    s.on('room:state', state => { setCode(state.code); setNotes(state.notes); setTasks(state.tasks); setMessages(state.messages || []); setFiles(state.files || []); });
     s.on('presence:update', setUsers);
     s.on('code:update', setCode);
     s.on('notes:update', setNotes);
     s.on('tasks:update', setTasks);
     s.on('chat:message', (m: Message) => setMessages(x => [...x.slice(-80), m]));
     s.on('file:added', (f: SharedFile) => setFiles(x => x.some(v => v.id === f.id) ? x : [...x, f]));
-    setJoined(true);
+    setJoined(true); setAuthError('');
   };
   const send = () => { if (message.trim()) socket.current?.emit('chat:send', { roomId, text: message }); setMessage(''); };
   const updateTasks = (next: Task[]) => { setTasks(next); socket.current?.emit('tasks:update', { roomId, tasks: next }); };
@@ -55,22 +72,27 @@ export default function App() {
   const upload = async (file?: File) => {
     if (!file) return;
     const data = new FormData(); data.append('file', file);
-    const res = await fetch(`${API}/api/rooms/${roomId}/files`, { method: 'POST', body: data });
+    const token = await authUser?.getIdToken();
+    const res = await fetch(`${API}/api/rooms/${roomId}/files`, { method: 'POST', headers: token ? { Authorization: `Bearer ${token}` } : {}, body: data });
     if (!res.ok) alert((await res.json()).message || 'Upload failed');
   };
   const run = async () => {
-    setOutput('Running securely…');
-    const res = await fetch(`${API}/api/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, languageId: 63 }) });
-    const data = await res.json(); setOutput(data.stdout || data.stderr || data.compile_output || data.message || 'Program finished without output.');
+    setOutput('Running JavaScript in an isolated browser worker…');
+    const workerSource = `self.console={log:(...a)=>postMessage({type:'log',value:a.map(v=>typeof v==='string'?v:JSON.stringify(v)).join(' ')}),error:(...a)=>postMessage({type:'log',value:a.join(' ')})};self.onmessage=e=>{try{eval(e.data);postMessage({type:'done'})}catch(err){postMessage({type:'error',value:err.stack||err.message})}}`;
+    const worker = new Worker(URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' })));
+    const lines: string[] = [];
+    const timer = setTimeout(() => { worker.terminate(); setOutput(lines.join('\n') || 'Execution stopped after 5 seconds.'); }, 5000);
+    worker.onmessage = event => { if (event.data.type === 'log') lines.push(event.data.value); else { clearTimeout(timer); worker.terminate(); setOutput(event.data.type === 'error' ? event.data.value : lines.join('\n') || 'Program finished without output.'); } };
+    worker.postMessage(code);
   };
   const copyInvite = async () => { await navigator.clipboard.writeText(location.href); setCopied(true); setTimeout(() => setCopied(false), 1800); };
 
-  if (!joined) return <Join name={name} setName={setName} roomId={roomId} setRoomId={setRoomId} join={join} />;
+  if (!joined) return <Join name={name} roomId={roomId} setRoomId={setRoomId} join={join} user={authUser} login={googleLogin} loading={authLoading} error={authError} />;
   return <div className="app-shell">
     <header className="topbar">
       <div className="brand"><div className="brand-mark"><Braces size={20}/></div><span>Sync<span>Flow</span></span></div>
       <div className="room-meta"><span className="status-dot"/><div><small>WORKSPACE</small><strong>{roomId}</strong></div><button className="icon-btn" onClick={copyInvite} title="Copy room link">{copied ? <CheckCircle2 size={17}/> : <Clipboard size={17}/>}</button></div>
-      <div className="top-actions"><div className={`connection ${connected ? '' : 'offline'}`}><Wifi size={14}/>{connected ? 'Live' : 'Reconnecting'}</div><div className="avatar-stack">{users.slice(0,4).map(u => <span key={u.id} style={{background:u.color}} title={u.name}>{u.name[0]?.toUpperCase()}</span>)}</div><button className="invite-btn" onClick={copyInvite}><Users size={16}/> Invite</button><button className="icon-btn"><Settings size={18}/></button></div>
+      <div className="top-actions"><div className={`connection ${connected ? '' : 'offline'}`}><Wifi size={14}/>{connected ? 'Live' : 'Reconnecting'}</div><div className="avatar-stack">{users.slice(0,4).map(u => <span key={u.id} style={{background:u.color}} title={u.name}>{u.name[0]?.toUpperCase()}</span>)}</div><button className="invite-btn" onClick={copyInvite}><Users size={16}/> Invite</button><button className="icon-btn" onClick={()=>logout().then(()=>location.reload())} title="Sign out"><Settings size={18}/></button></div>
     </header>
     <main className="workspace">
       <aside className="activity-bar">
@@ -101,6 +123,6 @@ export default function App() {
   </div>;
 }
 
-function Join({name,setName,roomId,setRoomId,join}:{name:string;setName:(v:string)=>void;roomId:string;setRoomId:(v:string)=>void;join:()=>void}) {
-  return <div className="join-page"><div className="ambient a1"/><div className="ambient a2"/><nav><div className="brand"><div className="brand-mark"><Braces size={22}/></div><span>Sync<span>Flow</span></span></div><span className="nav-note"><span className="status-dot"/> Real-time developer workspace</span></nav><div className="join-grid"><section className="hero"><div className="eyebrow"><Sparkles size={15}/> Built for teams that ship</div><h1>Build together.<br/><span>Flow faster.</span></h1><p>One focused workspace for collaborative coding, team chat, shared files, tasks and calls—beautifully in sync.</p><div className="feature-row"><span><Code2/>Live code</span><span><Video/>Team calls</span><span><Files/>File sharing</span></div></section><section className="join-card"><div className="card-icon"><Users/></div><h2>Enter your workspace</h2><p>Join a room and start collaborating instantly.</p><label>Your name<input value={name} onChange={e=>setName(e.target.value)} placeholder="Enter your name"/></label><label>Room ID<div className="room-input"><Hash size={18}/><input value={roomId} onChange={e=>setRoomId(e.target.value.replace(/\s/g,'-').toLowerCase())} onKeyDown={e=>e.key==='Enter'&&join()} placeholder="team-alpha"/></div></label><button className="join-btn" onClick={join}>Join workspace <span>→</span></button><small className="privacy">No account required · Your room stays private</small></section></div><footer className="landing-footer">© 2026 SyncFlow <span>Made for people who build together.</span></footer></div>;
+function Join({name,roomId,setRoomId,join,user,login,loading,error}:{name:string;roomId:string;setRoomId:(v:string)=>void;join:()=>void;user:FirebaseUser|null;login:()=>void;loading:boolean;error:string}) {
+  return <div className="join-page"><div className="ambient a1"/><div className="ambient a2"/><nav><div className="brand"><div className="brand-mark"><Braces size={22}/></div><span>Sync<span>Flow</span></span></div><span className="nav-note"><span className="status-dot"/> Real-time developer workspace</span></nav><div className="join-grid"><section className="hero"><div className="eyebrow"><Sparkles size={15}/> Built for teams that ship</div><h1>Build together.<br/><span>Flow faster.</span></h1><p>One focused workspace for collaborative coding, team chat, shared files, tasks and calls—beautifully in sync.</p><div className="feature-row"><span><Code2/>Live code</span><span><Video/>Team calls</span><span><Files/>File sharing</span></div></section><section className="join-card"><div className="card-icon"><Users/></div><h2>Enter your workspace</h2><p>{user ? `Signed in as ${user.displayName || name}` : 'Sign in securely, then join a room.'}</p>{!user && <button className="google-btn" disabled={loading} onClick={login}>G&nbsp; Continue with Google</button>}<label>Room ID<div className="room-input"><Hash size={18}/><input value={roomId} onChange={e=>setRoomId(e.target.value.replace(/\s/g,'-').toLowerCase())} onKeyDown={e=>e.key==='Enter'&&join()} placeholder="team-alpha"/></div></label><button className="join-btn" disabled={!user} onClick={join}>Join workspace <span>→</span></button>{error && <small className="auth-error">{error}</small>}<small className="privacy">Google-secured access · Room data saved in MongoDB</small></section></div><footer className="landing-footer">© 2026 SyncFlow <span>Made for people who build together.</span></footer></div>;
 }

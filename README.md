@@ -5,6 +5,8 @@ A polished real-time workspace where developers can write code together, chat, s
 ## Working features
 
 - Room-based realtime collaboration with shareable invite links
+- Google sign-in with Firebase Authentication and backend ID-token verification
+- MongoDB persistence for users, room code, chat, notes, tasks, and file metadata
 - Monaco editor with live code synchronization
 - Online presence and join/leave activity
 - Realtime room chat, collaborative notes, and Kanban tasks
@@ -13,7 +15,7 @@ A polished real-time workspace where developers can write code together, chat, s
 - Secure Judge0 integration point for code execution
 - LiveKit-ready call controls with a clear configuration state
 
-Room state currently lives in server memory and resets when the server restarts. Uploaded files use local storage. MongoDB/S3 persistence and full LiveKit calls are the next production milestones.
+When MongoDB is configured, collaborative room state persists across server restarts. Uploaded file bytes still use local storage; use a persistent disk or object storage in production. Audio/video calling remains a separate production milestone.
 
 ## Stack
 
@@ -60,6 +62,10 @@ Server (`apps/server/.env`):
 ```env
 PORT=4000
 CLIENT_URL=http://localhost:5173
+MONGODB_URI=mongodb+srv://USER:PASSWORD@CLUSTER/syncflow
+FIREBASE_PROJECT_ID=your-project-id
+FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxxxx@your-project-id.iam.gserviceaccount.com
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nYOUR_PRIVATE_KEY\n-----END PRIVATE KEY-----\n"
 JUDGE0_API_URL=
 JUDGE0_API_KEY=
 LIVEKIT_URL=
@@ -71,9 +77,17 @@ Web (`apps/web/.env`):
 
 ```env
 VITE_API_URL=http://localhost:4000
+VITE_FIREBASE_API_KEY=your-web-api-key
+VITE_FIREBASE_AUTH_DOMAIN=your-project-id.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=your-project-id
+VITE_FIREBASE_STORAGE_BUCKET=your-project-id.firebasestorage.app
+VITE_FIREBASE_MESSAGING_SENDER_ID=your-sender-id
+VITE_FIREBASE_APP_ID=your-app-id
 ```
 
-Without Judge0 credentials, Run returns a clear setup message instead of executing untrusted code on the application server.
+In Firebase Console, enable **Authentication → Sign-in method → Google** and add your local/deployed frontend domains under **Authorized domains**. Download a Firebase Admin service-account key and copy its three values into the server environment. Never commit the real `.env` files.
+
+JavaScript runs inside a short-lived browser Web Worker, so it works without Judge0 credentials. Judge0 can still be configured later for additional languages.
 
 ## Build and verify
 
