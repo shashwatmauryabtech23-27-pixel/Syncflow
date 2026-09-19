@@ -1,5 +1,5 @@
 import { getApp, getApps, initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
+import { Auth, getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
 
 const config = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -11,9 +11,12 @@ const config = {
 };
 
 export const firebaseConfigured = Object.values(config).every(Boolean);
-const app = getApps().length ? getApp() : initializeApp(config);
-export const auth = getAuth(app);
+const app = firebaseConfigured ? (getApps().length ? getApp() : initializeApp(config)) : null;
+export const auth: Auth | null = app ? getAuth(app) : null;
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
-export const loginWithGoogle = () => signInWithPopup(auth, googleProvider);
-export const logout = () => signOut(auth);
+export const loginWithGoogle = () => {
+  if (!auth) return Promise.reject(new Error('Firebase credentials are missing in apps/web/.env.'));
+  return signInWithPopup(auth, googleProvider);
+};
+export const logout = () => auth ? signOut(auth) : Promise.resolve();

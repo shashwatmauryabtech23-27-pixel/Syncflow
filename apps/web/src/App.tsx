@@ -36,6 +36,7 @@ export default function App() {
   const uploadRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    if (!auth) { setAuthLoading(false); return () => { socket.current?.disconnect(); }; }
     const unsubscribe = onAuthStateChanged(auth, user => { setAuthUser(user); setAuthLoading(false); if (user?.displayName) setName(user.displayName); });
     return () => { unsubscribe(); socket.current?.disconnect(); };
   }, []);
