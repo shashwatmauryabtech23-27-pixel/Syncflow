@@ -28,7 +28,7 @@ const UserModel = mongoose.model('User', new mongoose.Schema({
   name: { type: String, required: true }, email: String, photoURL: String, lastLoginAt: Date
 }, { timestamps: true }));
 const RoomModel = mongoose.model('Room', new mongoose.Schema({
-  roomId: { type: String, required: true, unique: true, index: true }, code: String, notes: String,
+  roomId: { type: String, required: true, unique: true, index: true }, code: String, language: { type:String, default:'javascript' }, notes: String,
   tasks: [{ id: String, title: String, status: { type: String, enum: ['todo', 'progress', 'done'] } }],
   messages: [{ id: String, text: String, time: Number, system: Boolean, user: { id: String, name: String, color: String } }],
   files: [{ id: String, name: String, size: Number, url: String }]
@@ -41,23 +41,24 @@ type User = { id: string; name: string; color: string };
 type Task = { id: string; title: string; status: 'todo' | 'progress' | 'done' };
 type Message = { id: string; text: string; time: number; system?: boolean; user?: User };
 type SharedFile = { id: string; name: string; size: number; url: string };
-type Room = { code: string; notes: string; users: Map<string, User>; tasks: Task[]; messages: Message[]; files: SharedFile[] };
+type Room = { code: string; language:string; notes: string; users: Map<string, User>; tasks: Task[]; messages: Message[]; files: SharedFile[] };
 type AuthRequest = Request & { user?: DecodedIdToken };
 const rooms = new Map<string, Room>();
 const colors = ['#8b5cf6', '#06b6d4', '#f97316', '#22c55e', '#ec4899'];
 const initialRoom = (): Room => ({
   code: `// Welcome to SyncFlow\nfunction greet(name) {\n  return \`Hello, \${name}!\`;\n}\nconsole.log(greet('team'));`,
+  language: 'javascript',
   notes: 'Add shared notes, decisions, and useful links here…', users: new Map(), messages: [], files: [],
   tasks: [{ id: crypto.randomUUID(), title: 'Plan the feature', status: 'todo' }, { id: crypto.randomUUID(), title: 'Build realtime workspace', status: 'progress' }, { id: crypto.randomUUID(), title: 'Ship the release', status: 'done' }]
 });
 const getRoom = async (roomId: string) => {
   if (rooms.has(roomId)) return rooms.get(roomId)!;
   const saved = mongoReady && mongoose.connection.readyState === 1 ? await RoomModel.findOne({ roomId }).lean() : null;
-  const room: Room = saved ? { code: saved.code || '', notes: saved.notes || '', tasks: saved.tasks as Task[], messages: saved.messages as Message[], files: saved.files as SharedFile[], users: new Map() } : initialRoom();
+  const room: Room = saved ? { code: saved.code || '', language: saved.language || 'javascript', notes: saved.notes || '', tasks: saved.tasks as Task[], messages: saved.messages as Message[], files: saved.files as SharedFile[], users: new Map() } : initialRoom();
   rooms.set(roomId, room); return room;
 };
 const saveRoom = async (roomId: string, room: Room) => {
-  if (mongoReady && mongoose.connection.readyState === 1) await RoomModel.updateOne({ roomId }, { $set: { code: room.code, notes: room.notes, tasks: room.tasks, messages: room.messages.slice(-100), files: room.files } }, { upsert: true });
+  if (mongoReady && mongoose.connection.readyState === 1) await RoomModel.updateOne({ roomId }, { $set: { code: room.code, language:room.language, notes: room.notes, tasks: room.tasks, messages: room.messages.slice(-100), files: room.files } }, { upsert: true });
 };
 const verifyToken = async (token?: string) => {
   if (!firebaseReady) throw new Error('Firebase Admin is not configured');
@@ -99,13 +100,13 @@ io.on('connection', socket => {
     const room = await getRoom(roomId); const auth = socket.data.auth as DecodedIdToken;
     const user = { id: socket.id, name: auth.name || auth.email?.split('@')[0] || 'User', color: colors[room.users.size % colors.length] };
     socket.join(roomId); socket.data.roomId = roomId; socket.data.user = user; room.users.set(socket.id, user);
-    socket.emit('room:state', { code: room.code, notes: room.notes, tasks: room.tasks, messages: room.messages, files: room.files }); io.to(roomId).emit('presence:update', [...room.users.values()]);
+    socket.emit('room:state', { code: room.code, language:room.language, notes: room.notes, tasks: room.tasks, messages: room.messages, files: room.files }); io.to(roomId).emit('presence:update', [...room.users.values()]);
   });
-  socket.on('code:change', async ({ roomId, code }) => { const room = await getRoom(roomId); room.code = String(code).slice(0, 200000); socket.to(roomId).emit('code:update', room.code); await saveRoom(roomId, room); });
+  socket.on('code:change', async ({ roomId, code, language }) => { const room = await getRoom(roomId); room.code = String(code).slice(0, 200000); if(language)room.language=String(language); socket.to(roomId).emit('code:update', {code:room.code,language:room.language}); await saveRoom(roomId, room); });
   socket.on('notes:change', async ({ roomId, notes }) => { const room = await getRoom(roomId); room.notes = String(notes).slice(0, 50000); socket.to(roomId).emit('notes:update', room.notes); await saveRoom(roomId, room); });
   socket.on('chat:send', async ({ roomId, text }) => { const room = await getRoom(roomId); const clean = String(text || '').trim().slice(0, 500); if (!clean) return; const message = { id: crypto.randomUUID(), user: socket.data.user, text: clean, time: Date.now() }; room.messages = [...room.messages.slice(-99), message]; io.to(roomId).emit('chat:message', message); await saveRoom(roomId, room); });
   socket.on('tasks:update', async ({ roomId, tasks }) => { const room = await getRoom(roomId); room.tasks = Array.isArray(tasks) ? tasks.slice(0, 100) : room.tasks; socket.to(roomId).emit('tasks:update', room.tasks); await saveRoom(roomId, room); });
   socket.on('signal', ({ target, data }) => io.to(target).emit('signal', { from: socket.id, data }));
-  socket.on('disconnect', () => { const room = rooms.get(socket.data.roomId); if (!room) return; room.users.delete(socket.id); io.to(socket.data.roomId).emit('presence:update', [...room.users.values()]); });
+  socket.on('disconnect', () => { const room = rooms.get(socket.data.roomId); if (!room) return; room.users.delete(socket.id); io.to(socket.data.roomId).emit('peer:left',{id:socket.id}); io.to(socket.data.roomId).emit('presence:update', [...room.users.values()]); });
 });
 server.listen(port, () => console.log(`SyncFlow server running at http://localhost:${port}`));
