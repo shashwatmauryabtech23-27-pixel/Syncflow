@@ -90,7 +90,20 @@ app.post('/api/rooms/:roomId/files', requireAuth, upload.single('file'), async (
 });
 app.post('/api/run', requireAuth, async (req, res) => {
   if (!process.env.JUDGE0_API_URL) return res.status(503).json({ message: 'Judge0 is not configured. JavaScript can run locally in the browser.' });
-  try { const response = await fetch(`${process.env.JUDGE0_API_URL}/submissions?base64_encoded=false&wait=true`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(process.env.JUDGE0_API_KEY ? { 'X-RapidAPI-Key': process.env.JUDGE0_API_KEY } : {}) }, body: JSON.stringify({ source_code: req.body.code, language_id: req.body.languageId || 63 }) }); res.status(response.status).json(await response.json()); }
+  try {
+    const rapidApiHeaders: Record<string, string> = {};
+    if (process.env.JUDGE0_API_KEY) {
+      rapidApiHeaders['X-RapidAPI-Key'] = process.env.JUDGE0_API_KEY;
+      rapidApiHeaders['X-RapidAPI-Host'] = process.env.JUDGE0_API_HOST || 'judge0-ce.p.rapidapi.com';
+    }
+    const response = await fetch(`${process.env.JUDGE0_API_URL.replace(/\/$/, '')}/submissions?base64_encoded=false&wait=true`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...rapidApiHeaders },
+      body: JSON.stringify({ source_code: String(req.body.code || '').slice(0, 200000), language_id: Number(req.body.languageId || 63) })
+    });
+    const result = await response.json();
+    if (!response.ok) return res.status(response.status).json({ message: result.message || result.error || 'Judge0 rejected the submission.', details: result });
+    res.json(result);
+  }
   catch { res.status(502).json({ message: 'Code execution service is unavailable.' }); }
 });
 
