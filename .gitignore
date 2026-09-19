@@ -1,0 +1,8 @@
+node_modules
+dist
+.env
+uploads
+upload
+*.log
+*.tsbuildinfo
+.DS_Store

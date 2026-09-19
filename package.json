@@ -1,0 +1,15 @@
+{
+  "name": "syncflow",
+  "private": true,
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev": "concurrently \"npm run dev -w apps/server\" \"npm run dev -w apps/web\"",
+    "dev:server": "npm run dev -w apps/server",
+    "dev:web": "npm run dev -w apps/web",
+    "build": "npm run build -w apps/web && npm run build -w apps/server",
+    "start": "npm run start -w apps/server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
