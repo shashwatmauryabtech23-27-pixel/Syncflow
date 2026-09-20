@@ -11,6 +11,7 @@ type Message = { id: string; text: string; time: number; system?: boolean; user?
 type Task = { id: string; title: string; status: 'todo' | 'progress' | 'done' };
 type SharedFile = { id: string; name: string; size: number; url: string };
 type Language = { label:string; monaco:string; ext:string; id?:number; starter:string };
+type EditorTab = { id:string; name:string; language:string; code:string };
 const languages:Record<string,Language> = {
   javascript:{label:'JavaScript',monaco:'javascript',ext:'js',id:63,starter:"console.log('Hello, SyncFlow!');"},
   typescript:{label:'TypeScript',monaco:'typescript',ext:'ts',id:74,starter:"const message: string = 'Hello, SyncFlow!';\nconsole.log(message);"},
@@ -36,6 +37,8 @@ export default function App() {
   const [roomId, setRoomId] = useState(roomFromUrl);
   const [code, setCode] = useState('');
   const [language, setLanguage] = useState('javascript');
+  const [tabs, setTabs] = useState<EditorTab[]>([{id:'main',name:'index',language:'javascript',code:''}]);
+  const [activeTabId, setActiveTabId] = useState('main');
   const [notes, setNotes] = useState('');
   const [users, setUsers] = useState<User[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -123,11 +126,11 @@ export default function App() {
     s.on('connect', () => { setConnected(true); s.emit('room:join', { roomId:clean, name }); });
     s.on('disconnect', () => setConnected(false));
     s.on('connect_error', error => setAuthError(error.message));
-    s.on('room:state', state => { setCode(state.code); setLanguage(state.language||'javascript'); setNotes(state.notes); setTasks(state.tasks); setMessages(state.messages || []); setFiles(state.files || []); });
+    s.on('room:state', state => { const nextLanguage=state.language||'javascript';setCode(state.code);setLanguage(nextLanguage);setTabs(current=>current.map(tab=>tab.id===activeTabId?{...tab,code:state.code,language:nextLanguage}:tab));setNotes(state.notes);setTasks(state.tasks);setMessages(state.messages || []);setFiles(state.files || []); });
     s.on('presence:update', (next:User[])=>{setUsers(next);next.filter(u=>u.id!==s.id).forEach(u=>{if(s.id&&s.id<u.id)addPeer(u.id,true).catch(e=>setCallError(e.message))})});
     s.on('signal',({from,data})=>handleSignal(from,data).catch(e=>setCallError(e.message)));
     s.on('peer:left',({id})=>{peers.current.get(id)?.close();peers.current.delete(id);setRemoteStreams(x=>x.filter(v=>v.id!==id))});
-    s.on('code:update', (payload:string|{code:string;language:string})=>{if(typeof payload==='string')setCode(payload);else{setCode(payload.code);setLanguage(payload.language)}});
+    s.on('code:update', (payload:string|{code:string;language:string})=>{const nextCode=typeof payload==='string'?payload:payload.code;const nextLanguage=typeof payload==='string'?language:payload.language;setCode(nextCode);setLanguage(nextLanguage);setTabs(current=>current.map(tab=>tab.id===activeTabId?{...tab,code:nextCode,language:nextLanguage}:tab))});
     s.on('notes:update', setNotes);
     s.on('tasks:update', setTasks);
     s.on('chat:message', (m: Message) => setMessages(x => [...x.slice(-80), m]));
@@ -170,7 +173,10 @@ export default function App() {
     worker.onmessage = event => { if (event.data.type === 'log') lines.push(event.data.value); else { clearTimeout(timer); worker.terminate(); setOutput(event.data.type === 'error' ? event.data.value : lines.join('\n') || 'Program finished without output.'); } };
     worker.postMessage(code);
   };
-  const changeLanguage=(next:string)=>{setLanguage(next);setCode(languages[next].starter);socket.current?.emit('code:change',{roomId,code:languages[next].starter,language:next})};
+  const activateTab=(id:string)=>{if(id===activeTabId)return;const saved=tabs.map(tab=>tab.id===activeTabId?{...tab,code,language}:tab);const next=saved.find(tab=>tab.id===id);if(!next)return;setTabs(saved);setActiveTabId(id);setCode(next.code);setLanguage(next.language);socket.current?.emit('code:change',{roomId,code:next.code,language:next.language})};
+  const newTab=()=>{const saved=tabs.map(tab=>tab.id===activeTabId?{...tab,code,language}:tab);const id=crypto.randomUUID();const next:EditorTab={id,name:`untitled-${tabs.length+1}`,language:'javascript',code:languages.javascript.starter};setTabs([...saved,next]);setActiveTabId(id);setLanguage(next.language);setCode(next.code);socket.current?.emit('code:change',{roomId,code:next.code,language:next.language})};
+  const closeTab=(id:string)=>{const saved=tabs.map(tab=>tab.id===activeTabId?{...tab,code,language}:tab);const index=saved.findIndex(tab=>tab.id===id);if(index<0)return;let remaining=saved.filter(tab=>tab.id!==id);if(!remaining.length)remaining=[{id:crypto.randomUUID(),name:'index',language:'javascript',code:''}];if(id===activeTabId){const next=remaining[Math.min(index,remaining.length-1)];setActiveTabId(next.id);setCode(next.code);setLanguage(next.language);socket.current?.emit('code:change',{roomId,code:next.code,language:next.language})}setTabs(remaining)};
+  const changeLanguage=(next:string)=>{const nextCode=languages[next].starter;setLanguage(next);setCode(nextCode);setTabs(current=>current.map(tab=>tab.id===activeTabId?{...tab,language:next,code:nextCode}:tab));socket.current?.emit('code:change',{roomId,code:nextCode,language:next})};
   const toggleMic=async()=>{try{const stream=await getMedia();const next=!mic;stream.getAudioTracks().forEach(t=>t.enabled=next);setMic(next)}catch(e){setCallError(e instanceof Error?e.message:'Microphone unavailable')}};
   const toggleVideo=async()=>{try{const stream=await getMedia();const next=!video;stream.getVideoTracks().forEach(t=>t.enabled=next);setVideo(next)}catch(e){setCallError(e instanceof Error?e.message:'Camera unavailable')}};
   const stopScreenShare=async()=>{const display=screenStream.current;const track=display?.getVideoTracks()[0];if(track)track.onended=null;display?.getTracks().forEach(t=>t.stop());screenStream.current=null;const camera=localStream.current?.getVideoTracks()[0];if(camera)await Promise.all([...peers.current.values()].map(p=>p.getSenders().find(s=>s.track?.kind==='video')?.replaceTrack(camera)));if(localVideoRef.current)localVideoRef.current.srcObject=localStream.current;setSharing(false)};
@@ -179,6 +185,7 @@ export default function App() {
 
   if (!joined) return <Join name={name} roomId={roomId} setRoomId={setRoomId} join={()=>join()} createRoom={createRoom} user={authUser} login={googleLogin} loading={authLoading} error={authError} />;
   const lang=languages[language];
+  const activeTab=tabs.find(tab=>tab.id===activeTabId)||tabs[0];
   return <div className="app-shell">
     <header className="topbar">
       <div className="brand"><div className="brand-mark"><Braces size={20}/></div><span>Sync<span>Flow</span></span></div>
@@ -192,15 +199,15 @@ export default function App() {
       <section className="file-panel" onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();upload(e.dataTransfer.files[0])}}>
         <div className="panel-title"><span>EXPLORER</span><button onClick={() => uploadRef.current?.click()}><FilePlus2 size={15}/></button></div>
         <div className="folder"><span>⌄</span> SYNCFLOW</div>
-        <div className="file active"><span className="js-icon">{lang.ext.toUpperCase()}</span> index.{lang.ext}</div>
+        <div className="file active"><span className="js-icon">{lang.ext.toUpperCase()}</span> {activeTab.name}.{lang.ext}</div>
         {files.map(f => <a className="file" href={`${API}${f.url}`} target="_blank" key={f.id}><span className="generic-icon">•</span>{f.name}</a>)}
         <button className="dropzone" onClick={() => uploadRef.current?.click()}><FilePlus2 size={19}/><span>Drop files here</span><small>Up to 10 MB</small></button>
         <input hidden type="file" ref={uploadRef} onChange={e=>upload(e.target.files?.[0])}/>
       </section>
       <section className="editor-area">
-        <div className="editor-tabs"><div className="editor-tab active"><span className="js-icon">{lang.ext.toUpperCase()}</span>index.{lang.ext} <X size={13}/></div><button className="new-tab"><Plus size={15}/></button><div className="editor-actions"><select aria-label="Language" value={language} onChange={e=>changeLanguage(e.target.value)}>{Object.entries(languages).map(([key,item])=><option value={key} key={key}>{item.label}</option>)}</select><button className="run-btn" onClick={run}><Play size={15} fill="currentColor"/> Run</button></div></div>
-        <div className="breadcrumbs">syncflow <span>›</span> index.{lang.ext} <span>›</span> <Code2 size={13}/> editor</div>
-        <div className="editor-wrap"><Editor height="100%" language={lang.monaco} theme="vs-dark" value={code} onChange={v=>{const next=v||'';setCode(next);socket.current?.emit('code:change',{roomId,code:next,language})}} options={{fontSize:14,fontFamily:"'JetBrains Mono', monospace",minimap:{enabled:false},padding:{top:18},scrollBeyondLastLine:false,renderLineHighlight:'all',automaticLayout:true}}/></div>
+        <div className="editor-tabs">{tabs.map(tab=>{const tabLang=languages[tab.id===activeTabId?language:tab.language];return <button type="button" className={`editor-tab ${tab.id===activeTabId?'active':''}`} onClick={()=>activateTab(tab.id)} key={tab.id}><span className="js-icon">{tabLang.ext.toUpperCase()}</span>{tab.name}.{tabLang.ext}<span className="tab-close" role="button" aria-label={`Close ${tab.name}`} onClick={e=>{e.stopPropagation();closeTab(tab.id)}}><X size={13}/></span></button>})}<button type="button" className="new-tab" onClick={newTab} title="New file"><Plus size={15}/></button><div className="editor-actions"><select aria-label="Language" value={language} onChange={e=>changeLanguage(e.target.value)}>{Object.entries(languages).map(([key,item])=><option value={key} key={key}>{item.label}</option>)}</select><button className="run-btn" onClick={run}><Play size={15} fill="currentColor"/> Run</button></div></div>
+        <div className="breadcrumbs">syncflow <span>›</span> {activeTab.name}.{lang.ext} <span>›</span> <Code2 size={13}/> editor</div>
+        <div className="editor-wrap"><Editor height="100%" language={lang.monaco} theme="vs-dark" value={code} onChange={v=>{const next=v||'';setCode(next);setTabs(current=>current.map(tab=>tab.id===activeTabId?{...tab,code:next,language}:tab));socket.current?.emit('code:change',{roomId,code:next,language})}} options={{fontSize:14,fontFamily:"'JetBrains Mono', monospace",minimap:{enabled:false},padding:{top:18},scrollBeyondLastLine:false,renderLineHighlight:'all',automaticLayout:true}}/></div>
         <div className="terminal"><div className="terminal-head"><span>OUTPUT</span><button onClick={()=>setOutput('')}>CLEAR</button></div><pre>{output}</pre></div>
       </section>
       <aside className="collab-panel">
