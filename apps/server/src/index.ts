@@ -111,9 +111,9 @@ app.post('/api/rooms/:roomId/files', requireAuth, upload.single('file'), async (
 app.post('/api/run', requireAuth, async (req, res) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20000);
+  const code=String(req.body.code||'').slice(0,200000);
+  const language=String(req.body.language||'');
   try {
-    const code=String(req.body.code||'').slice(0,200000);
-    const language=String(req.body.language||'');
     if(!process.env.JUDGE0_API_URL)return res.json(await runWithWandbox(code,language,controller.signal));
     const rapidApiHeaders: Record<string, string> = {};
     if (process.env.JUDGE0_API_KEY) {
@@ -132,7 +132,13 @@ app.post('/api/run', requireAuth, async (req, res) => {
   }
   catch (error) {
     const timedOut = error instanceof Error && error.name === 'AbortError';
-    res.status(timedOut ? 504 : 502).json({ message: timedOut ? 'Code execution timed out after 20 seconds.' : `Code execution service is unavailable: ${error instanceof Error?error.message:'Unknown error'}` });
+    if(!timedOut){
+      try { return res.json(await runWithWandbox(code,language,controller.signal)); }
+      catch(fallbackError){
+        return res.status(502).json({ message: `Code execution services are unavailable. Judge0: ${error instanceof Error?error.message:'Unknown error'}. Wandbox: ${fallbackError instanceof Error?fallbackError.message:'Unknown error'}` });
+      }
+    }
+    res.status(504).json({ message: 'Code execution timed out after 20 seconds.' });
   }
   finally { clearTimeout(timeout); }
 });
