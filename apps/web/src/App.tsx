@@ -59,13 +59,22 @@ export default function App() {
   const uploadRef = useRef<HTMLInputElement>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const localStream = useRef<MediaStream|null>(null);
+  const screenStream = useRef<MediaStream|null>(null);
   const peers = useRef(new Map<string,RTCPeerConnection>());
+  const pendingCandidates = useRef(new Map<string,RTCIceCandidateInit[]>());
 
   useEffect(() => {
     if (!auth) { setAuthLoading(false); return () => { socket.current?.disconnect(); }; }
     const unsubscribe = onAuthStateChanged(auth, user => { setAuthUser(user); setAuthLoading(false); if (user?.displayName) setName(user.displayName); });
     return () => { unsubscribe(); socket.current?.disconnect(); };
   }, []);
+  useEffect(() => {
+    const preview = sharing ? screenStream.current : localStream.current;
+    if (localVideoRef.current && preview) {
+      localVideoRef.current.srcObject = preview;
+      localVideoRef.current.play().catch(() => undefined);
+    }
+  }, [joined, sharing, video]);
   const googleLogin = async () => {
     if (authLoading) return;
     setAuthError('');
@@ -95,10 +104,10 @@ export default function App() {
     const stream=await getMedia(); stream.getTracks().forEach(t=>peer.addTrack(t,stream));
     peer.onicecandidate=e=>{if(e.candidate)socket.current?.emit('signal',{target:id,data:{candidate:e.candidate}})};
     peer.ontrack=e=>setRemoteStreams(x=>x.some(v=>v.id===id)?x:[...x,{id,stream:e.streams[0]}]);
-    peer.onconnectionstatechange=()=>{if(['failed','closed','disconnected'].includes(peer.connectionState)){peer.close();peers.current.delete(id);setRemoteStreams(x=>x.filter(v=>v.id!==id))}};
+    peer.onconnectionstatechange=()=>{if(['failed','closed','disconnected'].includes(peer.connectionState)){peer.close();peers.current.delete(id);pendingCandidates.current.delete(id);setRemoteStreams(x=>x.filter(v=>v.id!==id))}};
     if(initiator){const offer=await peer.createOffer();await peer.setLocalDescription(offer);socket.current?.emit('signal',{target:id,data:{description:peer.localDescription}})} return peer;
   };
-  const handleSignal=async(from:string,data:{description?:RTCSessionDescriptionInit;candidate?:RTCIceCandidateInit})=>{const peer=await addPeer(from,false);if(!peer)return;if(data.description){await peer.setRemoteDescription(data.description);if(data.description.type==='offer'){const answer=await peer.createAnswer();await peer.setLocalDescription(answer);socket.current?.emit('signal',{target:from,data:{description:peer.localDescription}})}}else if(data.candidate){try{await peer.addIceCandidate(data.candidate)}catch{}}};
+  const handleSignal=async(from:string,data:{description?:RTCSessionDescriptionInit;candidate?:RTCIceCandidateInit})=>{const peer=await addPeer(from,false);if(!peer)return;if(data.description){await peer.setRemoteDescription(data.description);const queued=pendingCandidates.current.get(from)||[];for(const candidate of queued){await peer.addIceCandidate(candidate)}pendingCandidates.current.delete(from);if(data.description.type==='offer'){const answer=await peer.createAnswer();await peer.setLocalDescription(answer);socket.current?.emit('signal',{target:from,data:{description:peer.localDescription}})}}else if(data.candidate){if(!peer.remoteDescription){pendingCandidates.current.set(from,[...(pendingCandidates.current.get(from)||[]),data.candidate])}else{await peer.addIceCandidate(data.candidate)}}};
   const join = async (requested=roomId) => {
     const clean=requested.trim().toLowerCase().replace(/[^a-z0-9-_]/g,'-');
     if (!authUser) return setAuthError('Please sign in with Google first.');
@@ -164,7 +173,8 @@ export default function App() {
   const changeLanguage=(next:string)=>{setLanguage(next);setCode(languages[next].starter);socket.current?.emit('code:change',{roomId,code:languages[next].starter,language:next})};
   const toggleMic=async()=>{try{const stream=await getMedia();const next=!mic;stream.getAudioTracks().forEach(t=>t.enabled=next);setMic(next)}catch(e){setCallError(e instanceof Error?e.message:'Microphone unavailable')}};
   const toggleVideo=async()=>{try{const stream=await getMedia();const next=!video;stream.getVideoTracks().forEach(t=>t.enabled=next);setVideo(next)}catch(e){setCallError(e instanceof Error?e.message:'Camera unavailable')}};
-  const shareScreen=async()=>{try{if(sharing){const camera=localStream.current?.getVideoTracks()[0];if(camera)peers.current.forEach(p=>p.getSenders().find(s=>s.track?.kind==='video')?.replaceTrack(camera));setSharing(false);return}const display=await navigator.mediaDevices.getDisplayMedia({video:true,audio:true});const track=display.getVideoTracks()[0];peers.current.forEach(p=>p.getSenders().find(s=>s.track?.kind==='video')?.replaceTrack(track));setSharing(true);track.onended=()=>{const camera=localStream.current?.getVideoTracks()[0];if(camera)peers.current.forEach(p=>p.getSenders().find(s=>s.track?.kind==='video')?.replaceTrack(camera));setSharing(false)}}catch(e){setCallError(e instanceof Error?e.message:'Screen sharing unavailable')}};
+  const stopScreenShare=async()=>{const display=screenStream.current;const track=display?.getVideoTracks()[0];if(track)track.onended=null;display?.getTracks().forEach(t=>t.stop());screenStream.current=null;const camera=localStream.current?.getVideoTracks()[0];if(camera)await Promise.all([...peers.current.values()].map(p=>p.getSenders().find(s=>s.track?.kind==='video')?.replaceTrack(camera)));if(localVideoRef.current)localVideoRef.current.srcObject=localStream.current;setSharing(false)};
+  const shareScreen=async()=>{try{if(sharing){await stopScreenShare();return}await getMedia();const display=await navigator.mediaDevices.getDisplayMedia({video:true,audio:true});const track=display.getVideoTracks()[0];if(!track)throw new Error('No screen video track was selected.');screenStream.current=display;if(localVideoRef.current){localVideoRef.current.srcObject=display;await localVideoRef.current.play().catch(()=>undefined)}await Promise.all([...peers.current.values()].map(p=>p.getSenders().find(s=>s.track?.kind==='video')?.replaceTrack(track)));setSharing(true);track.onended=()=>{stopScreenShare().catch(e=>setCallError(e instanceof Error?e.message:'Could not restore camera'))}}catch(e){screenStream.current?.getTracks().forEach(t=>t.stop());screenStream.current=null;setSharing(false);setCallError(e instanceof Error?e.message:'Screen sharing unavailable')}};
   const copyInvite = async () => { await navigator.clipboard.writeText(location.href); setCopied(true); setTimeout(() => setCopied(false), 1800); };
 
   if (!joined) return <Join name={name} roomId={roomId} setRoomId={setRoomId} join={()=>join()} createRoom={createRoom} user={authUser} login={googleLogin} loading={authLoading} error={authError} />;
@@ -205,7 +215,7 @@ export default function App() {
   </div>;
 }
 
-function RemoteVideo({stream,muted}:{stream:MediaStream;muted:boolean}){const ref=useRef<HTMLVideoElement>(null);useEffect(()=>{if(ref.current)ref.current.srcObject=stream},[stream]);return <div className="video-tile"><video ref={ref} autoPlay playsInline muted={muted}/><span>Teammate</span></div>}
+function RemoteVideo({stream,muted}:{stream:MediaStream;muted:boolean}){const ref=useRef<HTMLVideoElement>(null);useEffect(()=>{if(ref.current){ref.current.srcObject=stream;ref.current.play().catch(()=>undefined)}},[stream]);return <div className="video-tile"><video ref={ref} autoPlay playsInline muted={muted}/><span>Teammate</span></div>}
 function Join({name,roomId,setRoomId,join,createRoom,user,login,loading,error}:{name:string;roomId:string;setRoomId:(v:string)=>void;join:()=>void;createRoom:()=>void;user:FirebaseUser|null;login:()=>void;loading:boolean;error:string}) {
   return <div className="join-page"><div className="ambient a1"/><div className="ambient a2"/><nav><div className="brand"><div className="brand-mark"><Braces size={22}/></div><span>Sync<span>Flow</span></span></div><span className="nav-note"><span className="status-dot"/> Real-time developer workspace</span></nav><div className="join-grid"><section className="hero"><div className="eyebrow"><Sparkles size={15}/> Built for teams that ship</div><h1>Build together.<br/><span>Flow faster.</span></h1><p>Collaborative coding in 15 languages with video calls, screen sharing, chat and shared files.</p><div className="feature-row"><span><Code2/>15 languages</span><span><Video/>Video calls</span><span><MonitorUp/>Screen share</span></div></section><section className="join-card"><div className="card-icon"><Users/></div><h2>Start collaborating</h2><p>{user ? `Signed in as ${user.displayName || name}` : 'Sign in securely, then create or join a room.'}</p>{!user && <button type="button" className="google-btn" disabled={loading} onClick={login}>G&nbsp; {loading ? 'Signing in…' : 'Continue with Google'}</button>}<button type="button" className="create-room-btn" disabled={!user} onClick={createRoom}><Plus size={18}/> Create new room</button><div className="or-divider"><span>or join an existing room</span></div><label>Room ID<div className="room-input"><Hash size={18}/><input value={roomId} onChange={e=>setRoomId(e.target.value.replace(/\s/g,'-').toLowerCase())} onKeyDown={e=>e.key==='Enter'&&join()} placeholder="sync-a1b2c3d4"/></div></label><button type="button" className="join-btn" disabled={!user||!roomId.trim()} onClick={join}>Join room <span>→</span></button>{error && <small className="auth-error">{error}</small>}<small className="privacy">Google-secured access · Room data saved in MongoDB</small></section></div><footer className="landing-footer">© 2026 SyncFlow <span>Made for people who build together.</span></footer></div>;
 }
