@@ -161,7 +161,7 @@ export default function App() {
       const controller=new AbortController(); const timeout=setTimeout(()=>controller.abort(),25000);
       try {
         const token=await authUser?.getIdToken();
-        const res=await fetch(`${API}/api/run`,{method:'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:JSON.stringify({code,languageId:languages[language].id}),signal:controller.signal});
+        const res=await fetch(`${API}/api/run`,{method:'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:JSON.stringify({code,language,languageId:languages[language].id}),signal:controller.signal});
         const data=await res.json().catch(()=>({message:`Server returned HTTP ${res.status}.`}));
         if(!res.ok){setOutput(data.message||'Execution failed. Check Judge0 configuration.');return}
         const sections=[data.compile_output&&`COMPILE ERROR\n${data.compile_output}`,data.stderr&&`ERROR\n${data.stderr}`,data.stdout&&`OUTPUT\n${data.stdout}`].filter(Boolean);
