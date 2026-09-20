@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import Editor from '@monaco-editor/react';
+import ts from 'typescript';
 import { io, Socket } from 'socket.io-client';
 import { User as FirebaseUser, onAuthStateChanged } from 'firebase/auth';
 import { auth, firebaseConfigured, loginWithGoogle, logout } from './firebase';
@@ -154,7 +155,7 @@ export default function App() {
     if(language==='html'){const win=window.open('','_blank');if(!win){setOutput('Preview popup was blocked. Allow popups for localhost and run again.');return}win.document.open();win.document.write(code);win.document.close();setOutput('HTML preview opened successfully in a new tab.');return}
     if(language==='css'){const win=window.open('','_blank');if(!win){setOutput('Preview popup was blocked. Allow popups for localhost and run again.');return}win.document.open();win.document.write(`<!doctype html><html><head><style>${code}</style></head><body><h1>SyncFlow CSS Preview</h1><p>Your stylesheet is applied to this sample page.</p><button>Sample button</button></body></html>`);win.document.close();setOutput('CSS preview opened successfully in a new tab.');return}
     if(language==='json'){try{const parsed=JSON.parse(code);setOutput(`Valid JSON ✓\n\n${JSON.stringify(parsed,null,2)}`)}catch(error){setOutput(`Invalid JSON ✗\n${error instanceof Error?error.message:'Unknown JSON error'}`)}return}
-    if(language==='typescript'){try{const ts=await import('typescript');const result=ts.transpileModule(code,{compilerOptions:{target:ts.ScriptTarget.ES2020,module:ts.ModuleKind.None},reportDiagnostics:true});const errors=(result.diagnostics||[]).filter(item=>item.category===ts.DiagnosticCategory.Error);if(errors.length){setOutput(errors.map(item=>ts.flattenDiagnosticMessageText(item.messageText,'\n')).join('\n'));return}runInBrowser(result.outputText,'TypeScript')}catch(error){setOutput(`TypeScript compilation failed: ${error instanceof Error?error.message:'Unknown error'}`)}return}
+    if(language==='typescript'){try{const result=ts.transpileModule(code,{compilerOptions:{target:ts.ScriptTarget.ES2020,module:ts.ModuleKind.None},reportDiagnostics:true});const errors=(result.diagnostics||[]).filter(item=>item.category===ts.DiagnosticCategory.Error);if(errors.length){setOutput(errors.map(item=>ts.flattenDiagnosticMessageText(item.messageText,'\n')).join('\n'));return}runInBrowser(result.outputText,'TypeScript')}catch(error){setOutput(`TypeScript compilation failed: ${error instanceof Error?error.message:'Unknown error'}`)}return}
     if(language!=='javascript'){
       setOutput(`Running ${languages[language].label}…`);
       const controller=new AbortController(); const timeout=setTimeout(()=>controller.abort(),25000);
