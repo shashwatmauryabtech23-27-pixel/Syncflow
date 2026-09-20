@@ -149,9 +149,12 @@ export default function App() {
     const res = await fetch(`${API}/api/rooms/${roomId}/files`, { method: 'POST', headers: token ? { Authorization: `Bearer ${token}` } : {}, body: data });
     if (!res.ok) alert((await res.json()).message || 'Upload failed');
   };
+  const runInBrowser=(source:string,label:string)=>{setOutput(`Running ${label} in an isolated browser worker…`);const workerSource=`self.console={log:(...a)=>postMessage({type:'log',value:a.map(v=>typeof v==='string'?v:JSON.stringify(v)).join(' ')}),error:(...a)=>postMessage({type:'log',value:a.join(' ')})};self.onmessage=e=>{try{eval(e.data);postMessage({type:'done'})}catch(err){postMessage({type:'error',value:err.stack||err.message})}}`;const worker=new Worker(URL.createObjectURL(new Blob([workerSource],{type:'text/javascript'})));const lines:string[]=[];const timer=setTimeout(()=>{worker.terminate();setOutput(lines.join('\n')||'Execution stopped after 5 seconds.')},5000);worker.onmessage=event=>{if(event.data.type==='log')lines.push(event.data.value);else{clearTimeout(timer);worker.terminate();setOutput(event.data.type==='error'?event.data.value:lines.join('\n')||'Program finished without output.')}};worker.postMessage(source)};
   const run = async () => {
-    if(language==='html'){const win=window.open('','_blank');win?.document.write(code);win?.document.close();setOutput('HTML preview opened in a new tab.');return}
-    if(language==='css'||language==='json'){setOutput(`${languages[language].label} is validated by Monaco and does not need execution.`);return}
+    if(language==='html'){const win=window.open('','_blank');if(!win){setOutput('Preview popup was blocked. Allow popups for localhost and run again.');return}win.document.open();win.document.write(code);win.document.close();setOutput('HTML preview opened successfully in a new tab.');return}
+    if(language==='css'){const win=window.open('','_blank');if(!win){setOutput('Preview popup was blocked. Allow popups for localhost and run again.');return}win.document.open();win.document.write(`<!doctype html><html><head><style>${code}</style></head><body><h1>SyncFlow CSS Preview</h1><p>Your stylesheet is applied to this sample page.</p><button>Sample button</button></body></html>`);win.document.close();setOutput('CSS preview opened successfully in a new tab.');return}
+    if(language==='json'){try{const parsed=JSON.parse(code);setOutput(`Valid JSON ✓\n\n${JSON.stringify(parsed,null,2)}`)}catch(error){setOutput(`Invalid JSON ✗\n${error instanceof Error?error.message:'Unknown JSON error'}`)}return}
+    if(language==='typescript'){try{const ts=await import('typescript');const result=ts.transpileModule(code,{compilerOptions:{target:ts.ScriptTarget.ES2020,module:ts.ModuleKind.None},reportDiagnostics:true});const errors=(result.diagnostics||[]).filter(item=>item.category===ts.DiagnosticCategory.Error);if(errors.length){setOutput(errors.map(item=>ts.flattenDiagnosticMessageText(item.messageText,'\n')).join('\n'));return}runInBrowser(result.outputText,'TypeScript')}catch(error){setOutput(`TypeScript compilation failed: ${error instanceof Error?error.message:'Unknown error'}`)}return}
     if(language!=='javascript'){
       setOutput(`Running ${languages[language].label}…`);
       const controller=new AbortController(); const timeout=setTimeout(()=>controller.abort(),25000);
@@ -159,19 +162,17 @@ export default function App() {
         const token=await authUser?.getIdToken();
         const res=await fetch(`${API}/api/run`,{method:'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:JSON.stringify({code,languageId:languages[language].id}),signal:controller.signal});
         const data=await res.json().catch(()=>({message:`Server returned HTTP ${res.status}.`}));
-        setOutput(res.ok?(data.stdout||data.stderr||data.compile_output||data.status?.description||'Program finished without output.'):(data.message||'Execution failed. Check Judge0 configuration.'));
+        if(!res.ok){setOutput(data.message||'Execution failed. Check Judge0 configuration.');return}
+        const sections=[data.compile_output&&`COMPILE ERROR\n${data.compile_output}`,data.stderr&&`ERROR\n${data.stderr}`,data.stdout&&`OUTPUT\n${data.stdout}`].filter(Boolean);
+        const status=data.status?.description;if(status&&status!=='Accepted')sections.push(`STATUS\n${status}`);
+        if(data.time||data.memory)sections.push(`STATS\nTime: ${data.time??'-'}s · Memory: ${data.memory??'-'} KB`);
+        setOutput(sections.join('\n\n')||status||'Program finished without output.');
       } catch(error) {
         setOutput(error instanceof Error&&error.name==='AbortError'?'Execution timed out. Check Judge0 API key and subscription.':`Execution request failed: ${error instanceof Error?error.message:'Unknown network error'}`);
       } finally { clearTimeout(timeout); }
       return;
     }
-    setOutput('Running JavaScript in an isolated browser worker…');
-    const workerSource = `self.console={log:(...a)=>postMessage({type:'log',value:a.map(v=>typeof v==='string'?v:JSON.stringify(v)).join(' ')}),error:(...a)=>postMessage({type:'log',value:a.join(' ')})};self.onmessage=e=>{try{eval(e.data);postMessage({type:'done'})}catch(err){postMessage({type:'error',value:err.stack||err.message})}}`;
-    const worker = new Worker(URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' })));
-    const lines: string[] = [];
-    const timer = setTimeout(() => { worker.terminate(); setOutput(lines.join('\n') || 'Execution stopped after 5 seconds.'); }, 5000);
-    worker.onmessage = event => { if (event.data.type === 'log') lines.push(event.data.value); else { clearTimeout(timer); worker.terminate(); setOutput(event.data.type === 'error' ? event.data.value : lines.join('\n') || 'Program finished without output.'); } };
-    worker.postMessage(code);
+    runInBrowser(code,'JavaScript');
   };
   const activateTab=(id:string)=>{if(id===activeTabId)return;const saved=tabs.map(tab=>tab.id===activeTabId?{...tab,code,language}:tab);const next=saved.find(tab=>tab.id===id);if(!next)return;setTabs(saved);setActiveTabId(id);setCode(next.code);setLanguage(next.language);socket.current?.emit('code:change',{roomId,code:next.code,language:next.language})};
   const newTab=()=>{const saved=tabs.map(tab=>tab.id===activeTabId?{...tab,code,language}:tab);const id=crypto.randomUUID();const next:EditorTab={id,name:`untitled-${tabs.length+1}`,language:'javascript',code:languages.javascript.starter};setTabs([...saved,next]);setActiveTabId(id);setLanguage(next.language);setCode(next.code);socket.current?.emit('code:change',{roomId,code:next.code,language:next.language})};
