@@ -75,6 +75,26 @@ const io = new Server(server, { cors: { origin: clientUrl, methods: ['GET', 'POS
 app.use(cors({ origin: clientUrl })); app.use(express.json({ limit: '1mb' }));
 mkdirSync('uploads', { recursive: true }); app.use('/uploads', express.static('uploads'));
 const upload = multer({ dest: 'uploads/', limits: { fileSize: 10 * 1024 * 1024 } });
+const wandboxLanguages: Record<string, string> = { python:'Python', java:'Java', cpp:'C++', c:'C', csharp:'C#', go:'Go', rust:'Rust', php:'PHP', ruby:'Ruby', sql:'SQL' };
+let wandboxCompilerCache: { expires:number; compilers:Array<{name:string;language:string}> } | null = null;
+const runWithWandbox = async (code:string, language:string, signal:AbortSignal) => {
+  const base=(process.env.WANDBOX_API_URL||'https://wandbox.org/api').replace(/\/$/,'');
+  if(!wandboxLanguages[language]) throw new Error(`Wandbox does not support ${language}.`);
+  if(!wandboxCompilerCache||wandboxCompilerCache.expires<Date.now()){
+    const listResponse=await fetch(`${base}/list.json`,{signal});
+    if(!listResponse.ok)throw new Error(`Wandbox compiler list returned HTTP ${listResponse.status}.`);
+    wandboxCompilerCache={expires:Date.now()+10*60*1000,compilers:await listResponse.json() as Array<{name:string;language:string}>};
+  }
+  const expected=wandboxLanguages[language].toLowerCase();
+  const candidates=wandboxCompilerCache.compilers.filter(item=>String(item.language).toLowerCase()===expected);
+  const compiler=candidates.find(item=>!/head|snapshot|nightly/i.test(item.name))||candidates[0];
+  if(!compiler)throw new Error(`No Wandbox compiler is currently available for ${wandboxLanguages[language]}.`);
+  const response=await fetch(`${base}/compile.json`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,compiler:compiler.name,stdin:'',options:'warning'}),signal});
+  const result=await response.json() as Record<string,unknown>;
+  if(!response.ok)throw new Error(String(result.message||`Wandbox returned HTTP ${response.status}.`));
+  const status=String(result.status??'0');
+  return { stdout:result.program_output||null,stderr:result.program_error||null,compile_output:result.compiler_error||result.compiler_output||null,message:null,status:{id:status==='0'?3:6,description:status==='0'?'Accepted':'Compilation or Runtime Error'},runner:'wandbox',compiler:compiler.name };
+};
 
 app.get('/api/health', (_req, res) => res.json({ success: true, message: 'SyncFlow API is running', database: mongoose.connection.readyState === 1, firebase: firebaseReady, uptime: process.uptime() }));
 app.get('/api/config', (_req, res) => res.json({ firebase: firebaseReady, database: mongoose.connection.readyState === 1, judge0: Boolean(process.env.JUDGE0_API_URL), livekit: false }));
@@ -89,10 +109,12 @@ app.post('/api/rooms/:roomId/files', requireAuth, upload.single('file'), async (
   const roomId = String(req.params.roomId); const room = await getRoom(roomId); room.files.push(file); await saveRoom(roomId, room); io.to(roomId).emit('file:added', file); res.status(201).json(file);
 });
 app.post('/api/run', requireAuth, async (req, res) => {
-  if (!process.env.JUDGE0_API_URL) return res.status(503).json({ message: 'Judge0 is not configured. JavaScript can run locally in the browser.' });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20000);
   try {
+    const code=String(req.body.code||'').slice(0,200000);
+    const language=String(req.body.language||'');
+    if(!process.env.JUDGE0_API_URL)return res.json(await runWithWandbox(code,language,controller.signal));
     const rapidApiHeaders: Record<string, string> = {};
     if (process.env.JUDGE0_API_KEY) {
       rapidApiHeaders['X-RapidAPI-Key'] = process.env.JUDGE0_API_KEY;
@@ -100,16 +122,17 @@ app.post('/api/run', requireAuth, async (req, res) => {
     }
     const response = await fetch(`${process.env.JUDGE0_API_URL.replace(/\/$/, '')}/submissions?base64_encoded=false&wait=true`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', ...rapidApiHeaders },
-      body: JSON.stringify({ source_code: String(req.body.code || '').slice(0, 200000), language_id: Number(req.body.languageId || 63) }),
+      body: JSON.stringify({ source_code: code, language_id: Number(req.body.languageId || 63) }),
       signal: controller.signal
     });
     const result = await response.json();
-    if (!response.ok) return res.status(response.status).json({ message: result.message || result.error || 'Judge0 rejected the submission.', details: result });
+    if (!response.ok) return res.json(await runWithWandbox(code,language,controller.signal));
+    if(result.status?.id===13)return res.json(await runWithWandbox(code,language,controller.signal));
     res.json(result);
   }
   catch (error) {
     const timedOut = error instanceof Error && error.name === 'AbortError';
-    res.status(timedOut ? 504 : 502).json({ message: timedOut ? 'Judge0 timed out after 20 seconds. Check your API key, subscription and internet connection.' : 'Code execution service is unavailable.' });
+    res.status(timedOut ? 504 : 502).json({ message: timedOut ? 'Code execution timed out after 20 seconds.' : `Code execution service is unavailable: ${error instanceof Error?error.message:'Unknown error'}` });
   }
   finally { clearTimeout(timeout); }
 });
