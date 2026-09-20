@@ -102,19 +102,19 @@ const runWithWandbox = async (code:string, language:string, signal:AbortSignal) 
   return { stdout:result.program_output||null,stderr:result.program_error||null,compile_output:result.compiler_error||result.compiler_output||null,message:null,status:{id:status==='0'?3:6,description:status==='0'?'Accepted':'Compilation or Runtime Error'},runner:'wandbox',compiler:compiler.name };
 };
 
-app.get('/api/health', (_req, res) => res.json({ success: true, message: 'SyncFlow API is running', database: mongoose.connection.readyState === 1, firebase: firebaseReady, uptime: process.uptime() }));
-app.get('/api/config', (_req, res) => res.json({ firebase: firebaseReady, database: mongoose.connection.readyState === 1, judge0: Boolean(process.env.JUDGE0_API_URL), livekit: false }));
-app.post('/api/auth/firebase', requireAuth, async (req: AuthRequest, res) => {
+app.get('/api/health', (_req: Request, res: Response) => res.json({ success: true, message: 'SyncFlow API is running', database: mongoose.connection.readyState === 1, firebase: firebaseReady, uptime: process.uptime() }));
+app.get('/api/config', (_req: Request, res: Response) => res.json({ firebase: firebaseReady, database: mongoose.connection.readyState === 1, judge0: Boolean(process.env.JUDGE0_API_URL), livekit: false }));
+app.post('/api/auth/firebase', requireAuth, async (req: AuthRequest, res: Response) => {
   const user = req.user!; const profile = { firebaseUid: user.uid, name: user.name || user.email?.split('@')[0] || 'User', email: user.email, photoURL: user.picture, lastLoginAt: new Date() };
   if (mongoReady && mongoose.connection.readyState === 1) await UserModel.updateOne({ firebaseUid: user.uid }, { $set: profile }, { upsert: true });
   res.json({ user: profile });
 });
-app.post('/api/rooms/:roomId/files', requireAuth, upload.single('file'), async (req, res) => {
+app.post('/api/rooms/:roomId/files', requireAuth, upload.single('file'), async (req: Request, res: Response) => {
   if (!req.file) return res.status(400).json({ message: 'Choose a file to upload.' });
   const file = { id: req.file.filename, name: req.file.originalname, size: req.file.size, url: `/uploads/${req.file.filename}` };
   const roomId = String(req.params.roomId); const room = await getRoom(roomId); room.files.push(file); await saveRoom(roomId, room); io.to(roomId).emit('file:added', file); res.status(201).json(file);
 });
-app.post('/api/run', requireAuth, async (req, res) => {
+app.post('/api/run', requireAuth, async (req: Request, res: Response) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20000);
   const code=String(req.body.code||'').slice(0,200000);
