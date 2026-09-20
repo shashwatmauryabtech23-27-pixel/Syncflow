@@ -89,7 +89,13 @@ const runWithWandbox = async (code:string, language:string, signal:AbortSignal) 
   const candidates=wandboxCompilerCache.compilers.filter(item=>String(item.language).toLowerCase()===expected);
   const compiler=candidates.find(item=>!/head|snapshot|nightly/i.test(item.name))||candidates[0];
   if(!compiler)throw new Error(`No Wandbox compiler is currently available for ${wandboxLanguages[language]}.`);
-  const response=await fetch(`${base}/compile.json`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,compiler:compiler.name,stdin:'',options:''}),signal});
+  // Wandbox stores single-file Java submissions as prog.java and launches class prog.
+  // Keep the editor's conventional `public class Main` template working by
+  // adapting only the submitted copy; the user's source remains unchanged.
+  const submittedCode=language==='java'
+    ? code.replace(/public\s+class\s+Main\b/,'class prog').replace(/\bMain\s*\(/g,'prog(')
+    : code;
+  const response=await fetch(`${base}/compile.json`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:submittedCode,compiler:compiler.name,stdin:'',options:''}),signal});
   const result=await response.json() as Record<string,unknown>;
   if(!response.ok)throw new Error(String(result.message||`Wandbox returned HTTP ${response.status}.`));
   const status=String(result.status??'0');
