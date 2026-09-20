@@ -15,8 +15,16 @@ const app = firebaseConfigured ? (getApps().length ? getApp() : initializeApp(co
 export const auth: Auth | null = app ? getAuth(app) : null;
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
+let pendingGoogleLogin: ReturnType<typeof signInWithPopup> | null = null;
+
 export const loginWithGoogle = () => {
   if (!auth) return Promise.reject(new Error('Firebase credentials are missing in apps/web/.env.'));
-  return signInWithPopup(auth, googleProvider);
+  if (pendingGoogleLogin) return pendingGoogleLogin;
+
+  pendingGoogleLogin = signInWithPopup(auth, googleProvider).finally(() => {
+    pendingGoogleLogin = null;
+  });
+
+  return pendingGoogleLogin;
 };
 export const logout = () => auth ? signOut(auth) : Promise.resolve();
